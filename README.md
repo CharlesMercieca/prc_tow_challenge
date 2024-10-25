@@ -25,6 +25,6 @@ It's actually quite possible to build a decent lightweight model (around 3,000 R
 
 ### Bottom Line
 The rationale for challenge was to see how often aircraft operate close to their MTOW. We can use our model to infer this.
-![alt text](notebooks/operation_perc.png)
+![alt text](notebooks/operation_perc.svg)
 
 Put another way, if you fly B772’s, you almost always fly at 60% of MTOW, so paying fees based on MTOW is a bad deal.
