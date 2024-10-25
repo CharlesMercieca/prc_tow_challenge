@@ -1,0 +1,146 @@
+---
+title: "Notes on Features"
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+---
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+```
+
+## AUC
+
+This is the first feature attempted: the main idea was to have a single number summarizing vertical performance in the first 40 or so minutes of the flight. The most logical way to do this seemed to be to plot the altitude across time and calculate the area under the curve: faster climb outs to higher altitudes (i.e. lighter aircraft) should theoretically have larger AUC values than slower climb outs to intermediate cruising flight levels. The square root of this number was merely to keep the values from being excessively large.
+
+```{r}
+auc <- read_csv('auc_feature.csv')
+challenge <- read_csv('challenge_set.csv')
+
+challenge %>% 
+  filter(aircraft_type == "A20N") %>% 
+  inner_join(auc) %>% 
+  ggplot(aes(sqrt_auc, fill=tow>median(tow)))+
+  geom_histogram(bins = 60)+
+  theme_bw()+
+  facet_wrap(~tow>median(tow))
+```
+
+## Flight Level Stats
+
+These set of features were highly inspired by Eurocontrol's BADA concept, that is, benchmarking an aircraft's TAS and vertical speed at several flight level checkpoints.
+
+The processing is fairly basic, wind direction and velocity are calculated from the u and v components, and the headwind component is calculated based on the track. TAS is then approximated from this.
+
+```{r, eval=FALSE}
+velocity <- function(uo, vo){
+  return(sqrt(uo**2 + vo**2))
+}
+
+direction <- function(uo, vo){
+  return(180 + (180/pi) * atan2(uo, vo))
+}
+
+headwind_component <- function(speed, angle){
+  return(speed*cos(angle * (pi/180)))
+}
+```
+
+The mean and median vs and TAS are calculated in 1000 foot windows, save for the first initial climb, where a finer 500 foot window was used (the idea was that this portion might have more signal as a function of weight.
+
+The raw data looks like this:
+
+```{r message=FALSE, warning=FALSE}
+ctf <- read_csv("climb_table_features_2024-10-19.csv")
+
+head(ctf)
+```
+
+The result is somewhat intuitive, where a heavier aircraft of the same type tends to climb slower but fly faster at a heavier weight.
+
+```{r message=FALSE, warning=FALSE}
+neo_flights <- challenge %>% 
+  inner_join(ctf) %>% 
+  filter(aircraft_type == 'A20N') 
+
+sample_ids <- neo_flights %>% 
+  group_by(flight_id) %>% 
+  tally() %>% 
+  sample_n(size=100) %>% 
+  pull(flight_id)
+
+mean_wt <- mean(neo_flights$tow)
+
+neo_flights%>%
+  filter(fl >= 0 & fl <=360) %>%
+  filter(flight_id %in% sample_ids) %>% 
+  ggplot(aes(x=fl, y=median_vs, colour = tow > mean_wt))+
+  geom_point(alpha=0.4)+
+  theme_bw()+
+  geom_smooth(se=F)+
+  ylab("Median Vertical Speed")+
+  xlab("Flight Level")+
+  labs("Vertical Speed Through FLs")
+
+neo_flights%>%
+  filter(fl >= 0 & fl <=360) %>%
+  filter(flight_id %in% sample_ids) %>% 
+  ggplot(aes(x=fl, y=median_tas, colour = tow > mean_wt))+
+  geom_point(alpha=0.4)+
+  theme_bw()+
+  geom_smooth(se=F)+
+  ylab("Median TAS")+
+  xlab("Flight Level")+
+  labs("Vertical Speed Through FLs")
+```
+
+In practice, this dataframe was pivoted so that a single flight id occupied 1 row, and each of the vs and tas values per fl was a column.
+
+## Granular Climb Trajectories
+
+Loosely inspired by **Alligier (2015)** and based on the idea that machine learning could benefit from the raw climb data itself, this approach fits a spline to account for noisy data points, and looks a set number of points (based on 30 second increments) before and after a flight reaches a threshold (in practice I used 15,000 feet)
+
+```{r message=FALSE, warning=FALSE}
+climb_trajectories <-read_csv("climb_features_processed2024-10-19.csv")
+
+head(climb_trajectories)
+```
+
+```{r}
+climb_trajectories %>% 
+  filter(flight_id %in% sample_ids) %>% 
+  inner_join(challenge) %>% 
+
+  ggplot(aes(x=point, y = altitude, group = flight_id, colour = tow > mean_wt))+
+  geom_line(alpha=0.4)+
+  theme_bw()+
+  ylab("Altitude")+
+  xlab("Flight Path Point")
+```
+
+Similarly to above, the way this feature was fed into the model is a pivot by flight id, with p1 to p30, corresponding to points in the trajectory, being separate columns.
+
+In theory tree based models should be able to account for the speed/altitude interaction by themselves, but a possible enrichment is to overtly code it, firstly by converting all units to metric, then working the kinetic energy part out from the speed:
+
+```{r, eval=FALSE}
+kinetic_energy = (speed_ms**2)/ (2*9.81)
+```
+
+and adding the altitude part:
+
+```{r, eval=FALSE}
+specific_energy = kinetic_energy + altitude_m
+```
+
+```{r message=FALSE, warning=FALSE}
+climb_trajectories %>% 
+  filter(flight_id %in% sample_ids) %>% 
+  inner_join(challenge) %>% 
+
+  ggplot(aes(x=speed, y = altitude, color=specific_energy))+
+  geom_point()+
+  theme_bw()+
+  scale_color_viridis_c()
+```
